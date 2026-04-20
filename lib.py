@@ -2,6 +2,7 @@ import MetaTrader5 as mt5
 from datetime import datetime, timedelta
 from typing import List, Dict
 import pandas as pd
+import pytz
 from constants import MT5Timeframe
 import logging
 
@@ -151,7 +152,7 @@ def get_deal_from_ticket(ticket, from_date=None, to_date=None):
 
     # Define default date range if not provided
     if from_date is None or to_date is None:
-        to_date = datetime.now(mt5.TIMEZONE)
+        to_date = datetime.now(pytz.UTC)
         from_date = to_date - timedelta(minutes=15)  # Adjust based on polling interval
 
     # Convert datetime to MT5 time (integer)
@@ -179,8 +180,8 @@ def get_deal_from_ticket(ticket, from_date=None, to_date=None):
             'symbol': deals_df['symbol'].iloc[0],
             'type': 'BUY' if deals_df['type'].iloc[0] == 'DEAL_TYPE_BUY' else 'SELL',
             'volume': deals_df['volume'].sum(),
-            'open_time': datetime.fromtimestamp(deals_df['time'].min(), tz=mt5.TIMEZONE),
-            'close_time': datetime.fromtimestamp(deals_df['time'].max(), tz=mt5.TIMEZONE),
+            'open_time': datetime.fromtimestamp(deals_df['time'].min(), tz=pytz.UTC),
+            'close_time': datetime.fromtimestamp(deals_df['time'].max(), tz=pytz.UTC),
             'open_price': deals_df['price'].iloc[0],
             'close_price': deals_df['price'].iloc[-1],
             'profit': deals_df['profit'].sum(),

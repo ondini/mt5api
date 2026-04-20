@@ -67,7 +67,7 @@ def send_market_order_endpoint():
     description: Execute a market order for a specified symbol with optional parameters.
     """
     try:
-        data = request.get_json()
+        data = request.get_json(force=True, silent=True)
         if not data:
             return jsonify({"error": "Order data is required"}), 400
 

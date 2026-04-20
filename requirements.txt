@@ -1,8 +1,11 @@
-numpy==1.22.4 
-pandas==1.4.2
+numpy>=1.26
+pandas>=2.0
 pytz
 python-dotenv
 flasgger
 python-json-logger
 flask
 MetaTrader5
+waitress
+pytest
+pytest-flask
