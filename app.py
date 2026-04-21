@@ -9,6 +9,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from swagger import swagger_config
 
 # Import routes
+from routes.auth import auth_bp
 from routes.health import health_bp
 from routes.symbol import symbol_bp
 from routes.data import data_bp
@@ -26,6 +27,7 @@ app.config['PREFERRED_URL_SCHEME'] = 'https'
 swagger = Swagger(app, config=swagger_config)
 
 # Register blueprints
+app.register_blueprint(auth_bp)
 app.register_blueprint(health_bp)
 app.register_blueprint(symbol_bp)
 app.register_blueprint(data_bp)

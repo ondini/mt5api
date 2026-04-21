@@ -30,9 +30,11 @@ def health_check():
       200:
         description: Health check successful
     """
-    initialized = mt5.initialize() if mt5 is not None else False
+    terminal = mt5.terminal_info()
+    account = mt5.account_info()
     return jsonify({
         "status": "healthy",
-        "mt5_connected": mt5 is not None,
-        "mt5_initialized": initialized
+        "mt5_terminal_connected": terminal is not None,
+        "mt5_account_logged_in": account is not None,
+        "mt5_account": account.login if account else None,
     }), 200
