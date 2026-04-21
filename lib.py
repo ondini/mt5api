@@ -150,17 +150,19 @@ def get_deal_from_ticket(ticket, from_date=None, to_date=None):
         logger.error("Ticket must be an integer.")
         return None
 
-    # Define default date range if not provided
-    if from_date is None or to_date is None:
-        to_date = datetime.now(pytz.UTC)
-        from_date = to_date - timedelta(minutes=15)  # Adjust based on polling interval
+    # MT5 ignores date range when position filter is combined with it —
+    # fetch all deals for this position then filter by date in Python.
+    deals = mt5.history_deals_get(position=ticket)
 
-    # Convert datetime to MT5 time (integer)
-    from_timestamp = int(from_date.timestamp())
-    to_timestamp = int(to_date.timestamp())
-
-    # Retrieve deals using the specified date range and position
-    deals = mt5.history_deals_get(from_timestamp, to_timestamp, position=ticket)
+    if deals and (from_date is not None or to_date is not None):
+        if from_date is None:
+            from_date = datetime(2000, 1, 1, tzinfo=pytz.UTC)
+        if to_date is None:
+            to_date = datetime.now(pytz.UTC)
+        deals = tuple(
+            d for d in deals
+            if from_date.timestamp() <= d.time <= to_date.timestamp()
+        )
     if not deals:
         logger.error(f"No deal history found for position ticket {ticket} between {from_date} and {to_date}.")
         return None
@@ -199,13 +201,14 @@ def get_order_from_ticket(ticket):
         logger.error("Ticket must be an integer.")
         return None
 
-    # Get the order history
-    order = mt5.history_orders_get(ticket=ticket)
+    # MT5 requires a date range even when filtering by ticket.
+    to_date = datetime.now(pytz.UTC)
+    from_date = datetime(2000, 1, 1, tzinfo=pytz.UTC)
+    order = mt5.history_orders_get(
+        int(from_date.timestamp()), int(to_date.timestamp()), ticket=ticket
+    )
     if order is None or len(order) == 0:
         logger.error(f"No order history found for ticket {ticket}")
         return None
 
-    # Convert order to a dictionary
-    order_dict = order[0]._asdict()
-
-    return order_dict
+    return order[0]._asdict()

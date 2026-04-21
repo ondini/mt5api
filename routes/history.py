@@ -205,7 +205,16 @@ def history_deals_get_endpoint():
         to_timestamp = int(to_date.timestamp())
 
         if position is not None:
-            deals = mt5.history_deals_get(from_timestamp, to_timestamp, position=int(position))
+            # MT5 ignores date range when position= is combined with it.
+            # Fetch all deals for the position then filter by date in Python.
+            all_deals = mt5.history_deals_get(position=int(position))
+            if all_deals is None:
+                deals = None
+            else:
+                deals = tuple(
+                    d for d in all_deals
+                    if from_timestamp <= d.time <= to_timestamp
+                )
         else:
             deals = mt5.history_deals_get(from_timestamp, to_timestamp)
 
@@ -267,7 +276,13 @@ def history_orders_get_endpoint():
             return jsonify({"error": "Ticket parameter is required"}), 400
         
         ticket = int(ticket)
-        orders = mt5.history_orders_get(ticket=ticket)
+        # MT5 requires a date range; ticket= is passed as an additional filter.
+        from datetime import timezone
+        to_dt = datetime.now(timezone.utc)
+        from_dt = datetime(2000, 1, 1, tzinfo=timezone.utc)
+        orders = mt5.history_orders_get(
+            int(from_dt.timestamp()), int(to_dt.timestamp()), ticket=ticket
+        )
         if orders is None:
             return jsonify({"error": "Failed to get orders history"}), 404
         

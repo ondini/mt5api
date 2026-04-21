@@ -67,7 +67,7 @@ def login():
 
         account = int(account)
 
-        if not mt5.initialize():
+        if mt5.terminal_info() is None and not mt5.initialize():
             return jsonify({"error": "Failed to initialize MT5 terminal", "last_error": mt5.last_error()}), 500
 
         authorized = mt5.login(account, password=password, server=server)
