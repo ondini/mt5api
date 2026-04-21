@@ -158,8 +158,8 @@ def get_order_from_ticket_endpoint():
             'name': 'position',
             'in': 'query',
             'type': 'integer',
-            'required': True,
-            'description': 'Position number to filter deals.'
+            'required': False,
+            'description': 'Optional position number to filter deals. Omit to return all deals in range.'
         }
     ],
     'responses': {
@@ -188,30 +188,33 @@ def history_deals_get_endpoint():
     """
     Get Deals History
     ---
-    description: Retrieve historical deals within a specified date range for a particular position.
+    description: Retrieve historical deals within a specified date range. Optionally filter by position.
     """
     try:
         from_date = request.args.get('from_date')
         to_date = request.args.get('to_date')
         position = request.args.get('position')
-        
-        if not all([from_date, to_date, position]):
-            return jsonify({"error": "from_date, to_date, and position parameters are required"}), 400
-        
+
+        if not all([from_date, to_date]):
+            return jsonify({"error": "from_date and to_date parameters are required"}), 400
+
         from_date = datetime.fromisoformat(from_date.replace('Z', '+00:00'))
         to_date = datetime.fromisoformat(to_date.replace('Z', '+00:00'))
-        position = int(position)
 
         from_timestamp = int(from_date.timestamp())
         to_timestamp = int(to_date.timestamp())
-        deals = mt5.history_deals_get(from_timestamp, to_timestamp, position=position)
-        
+
+        if position is not None:
+            deals = mt5.history_deals_get(from_timestamp, to_timestamp, position=int(position))
+        else:
+            deals = mt5.history_deals_get(from_timestamp, to_timestamp)
+
         if deals is None:
             return jsonify({"error": "Failed to get deals history"}), 404
-        
+
         deals_list = [deal._asdict() for deal in deals]
         return jsonify(deals_list)
-    
+
     except ValueError:
         return jsonify({"error": "Invalid parameter format"}), 400
     except Exception as e:
