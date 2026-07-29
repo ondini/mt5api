@@ -201,12 +201,12 @@ def get_order_from_ticket(ticket):
         logger.error("Ticket must be an integer.")
         return None
 
-    # MT5 requires a date range even when filtering by ticket.
-    to_date = datetime.now(pytz.UTC)
-    from_date = datetime(2000, 1, 1, tzinfo=pytz.UTC)
-    order = mt5.history_orders_get(
-        int(from_date.timestamp()), int(to_date.timestamp()), ticket=ticket
-    )
+    # Use the ticket-only overload. Passing date_from/date_to positional
+    # arguments together with ticket= makes MT5 ignore the ticket filter
+    # entirely and return the first order in the whole date range instead
+    # (verified against the live terminal — every ticket returned the same
+    # order). The ticket-only call is the correct, documented overload.
+    order = mt5.history_orders_get(ticket=ticket)
     if order is None or len(order) == 0:
         logger.error(f"No order history found for ticket {ticket}")
         return None

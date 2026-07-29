@@ -33,12 +33,20 @@ def test_get_deal_from_ticket_not_found(client):
 # ── /get_order_from_ticket ────────────────────────────────────────────────────
 
 def test_get_order_from_ticket_success(client, sample_history_order):
-    with patch("MetaTrader5.history_orders_get", return_value=(sample_history_order,)):
+    with patch(
+        "MetaTrader5.history_orders_get", return_value=(sample_history_order,)
+    ) as mock_get:
         resp = client.get("/get_order_from_ticket?ticket=12345")
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["ticket"] == 12345
     assert data["symbol"] == "EURUSD"
+    # Must call the ticket-only overload. Passing a date_from/date_to range
+    # alongside ticket= makes MT5 ignore the ticket filter and return the
+    # first order in the whole range instead — a real bug that let every
+    # /get_order_from_ticket lookup silently return the same order regardless
+    # of which ticket was requested.
+    mock_get.assert_called_once_with(ticket=12345)
 
 
 def test_get_order_from_ticket_missing_param(client):
