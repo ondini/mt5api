@@ -68,8 +68,10 @@ def test_get_order_from_ticket_not_found(client):
 # ── /history_deals_get ────────────────────────────────────────────────────────
 
 _DEAL_PARAMS = (
-    "?from_date=2023-11-14T00:00:00"
-    "&to_date=2023-11-14T01:00:00"
+    # Window must bracket sample_deal.time=1700000000 (2023-11-14 22:13:20
+    # UTC) regardless of the local timezone .timestamp() resolves against.
+    "?from_date=2023-11-01T00:00:00"
+    "&to_date=2023-11-30T00:00:00"
     "&position=12345"
 )
 
