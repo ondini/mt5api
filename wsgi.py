@@ -51,6 +51,12 @@ from app import app  # noqa: E402
 if __name__ == "__main__":
     from waitress import serve
 
+    import sync_worker
+
+    # Started only here (the real production entrypoint), never at plain
+    # import time — see app.py's __main__ block for why.
+    sync_worker.start_worker()
+
     host = os.environ.get("MT5_WSGI_HOST", "127.0.0.1")
     port = int(os.environ.get("MT5_WSGI_PORT", "8000"))
     threads = int(os.environ.get("MT5_WSGI_THREADS", "4"))

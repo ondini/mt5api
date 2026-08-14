@@ -8,6 +8,7 @@ Skipped automatically when the server is unreachable or MT5 terminal is not conn
 """
 import json
 import os
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -290,3 +291,57 @@ class TestPositions:
         status, body = _get("/get_positions")
         assert status == 200
         assert isinstance(body, list)
+
+
+# ---------------------------------------------------------------------------
+# 6. Sync account history (background job queue)
+# ---------------------------------------------------------------------------
+
+class TestSyncAccountHistory:
+    def test_sync_history_end_to_end(self):
+        to_dt = datetime.now(timezone.utc)
+        from_dt = to_dt - timedelta(days=30)
+        status, body = _post("/sync_account_history", {
+            "account":   DEMO_ACCOUNT,
+            "password":  DEMO_PASSWORD,
+            "server":    DEMO_SERVER,
+            "from_date": from_dt.strftime("%Y-%m-%dT%H:%M:%S"),
+            "to_date":   to_dt.strftime("%Y-%m-%dT%H:%M:%S"),
+        })
+        assert status == 202
+        assert body["status"] == "queued"
+        job_id = body["job_id"]
+
+        # Real background worker, real terminal — the one place a bounded
+        # poll loop is appropriate for this feature.
+        deadline = time.time() + 30
+        final = None
+        while time.time() < deadline:
+            s, b = _get(f"/sync_account_history/{job_id}")
+            assert s == 200
+            if b["status"] in ("done", "failed"):
+                final = b
+                break
+            time.sleep(0.5)
+
+        assert final is not None, "sync job did not finish within 30s"
+        assert final["status"] == "done", final.get("error")
+        assert isinstance(final["result"], list)
+
+    def test_sync_history_unknown_job_404(self):
+        status, _ = _get("/sync_account_history/does-not-exist")
+        assert status == 404
+
+    def test_sync_history_never_rejects_under_burst(self):
+        to_dt = datetime.now(timezone.utc)
+        from_dt = to_dt - timedelta(days=1)
+        for _ in range(5):
+            status, body = _post("/sync_account_history", {
+                "account":   DEMO_ACCOUNT,
+                "password":  DEMO_PASSWORD,
+                "server":    DEMO_SERVER,
+                "from_date": from_dt.strftime("%Y-%m-%dT%H:%M:%S"),
+                "to_date":   to_dt.strftime("%Y-%m-%dT%H:%M:%S"),
+            })
+            assert status == 202
+            assert body["status"] == "queued"

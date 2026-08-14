@@ -8,6 +8,8 @@ from flasgger import Swagger
 from werkzeug.middleware.proxy_fix import ProxyFix
 from swagger import swagger_config
 
+import sync_worker
+
 # Import routes
 from routes.auth import auth_bp
 from routes.health import health_bp
@@ -17,6 +19,7 @@ from routes.position import position_bp
 from routes.order import order_bp
 from routes.history import history_bp
 from routes.error import error_bp
+from routes.sync import sync_bp
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -35,6 +38,7 @@ app.register_blueprint(position_bp)
 app.register_blueprint(order_bp)
 app.register_blueprint(history_bp)
 app.register_blueprint(error_bp)
+app.register_blueprint(sync_bp)
 
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
@@ -57,4 +61,9 @@ def require_api_key():
 if __name__ == '__main__':
     if not mt5.initialize():
         logger.error("Failed to initialize MT5.")
+    # Only started for a real running server (dev-run here, or wsgi.py's own
+    # __main__ block for production) — never at plain module-import time, so
+    # importing `app` (e.g. from tests) never spins up a background thread
+    # that would process real jobs against a live terminal.
+    sync_worker.start_worker()
     app.run(host='0.0.0.0', port=int(os.environ.get('MT5_API_PORT', 5000)))
