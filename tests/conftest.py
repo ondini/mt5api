@@ -131,9 +131,11 @@ def sample_symbol_info():
         "volume_max": 100.0,
         "volume_step": 0.01,
         "trade_mode": 4,
+        "trade_contract_size": 100000.0,
         "bid": 1.10000,
         "ask": 1.10020,
     }
+    mock.trade_contract_size = 100000.0
     return mock
 
 

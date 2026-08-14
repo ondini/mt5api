@@ -17,6 +17,14 @@ and remain unsynchronized against each other and against sync jobs — MT5's
 session is process-wide regardless of which code path touches it. Accepted
 because this API is now used exclusively via /sync_account_history for the
 history-backfill flow.
+
+Beyond login+fetch, this worker also resolves everything a caller would
+otherwise need separate, unsynchronized /get_order_from_ticket and
+/symbol_info/<symbol> calls for: each deal gets an `order_type` field, and
+the job result carries a `symbols: {symbol: contract_size}` map for every
+symbol appearing in the batch. Since one job runs start-to-finish on the
+single worker thread with no other job interleaved, these lookups are race-free
+here in a way they can never be as separate per-trade HTTP calls from a caller.
 """
 import itertools
 import logging
@@ -29,6 +37,8 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import MetaTrader5 as mt5
+
+from lib import get_order_from_ticket
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +65,7 @@ class Job:
     finished_at: Optional[float] = None
     result: Optional[list] = None
     deal_count: Optional[int] = None
+    symbols: Optional[dict] = None
     error: Optional[str] = None
     error_code: Optional[int] = None
 
@@ -90,6 +101,26 @@ def enqueue_sync_job(account, password, server, from_date, to_date, from_timesta
     return job_id
 
 
+def _enrich_deals(deals: list[dict]) -> dict:
+    """
+    Mutate each deal dict in place with its order_type, and return a
+    {symbol: contract_size} map covering every symbol in the batch.
+    Resolves each unique order/symbol exactly once. A lookup miss (order or
+    symbol no longer resolvable) leaves the field as None rather than
+    failing the whole job — one bad ticket/symbol shouldn't sink the batch.
+    """
+    symbols: dict = {}
+    for deal in deals:
+        order = get_order_from_ticket(deal["order"])
+        deal["order_type"] = order["type"] if order is not None else None
+
+        symbol = deal["symbol"]
+        if symbol not in symbols:
+            info = mt5.symbol_info(symbol)
+            symbols[symbol] = info.trade_contract_size if info is not None else None
+    return symbols
+
+
 def process_sync_job(job: Job) -> Job:
     """
     Pure, directly-testable core: login, fetch history, mutate job in place.
@@ -117,6 +148,7 @@ def process_sync_job(job: Job) -> Job:
 
         job.result = [deal._asdict() for deal in deals]
         job.deal_count = len(job.result)
+        job.symbols = _enrich_deals(job.result)
     except Exception as e:
         logger.error(f"Error in process_sync_job: {str(e)}")
         job.error = "Internal server error"
@@ -125,8 +157,8 @@ def process_sync_job(job: Job) -> Job:
         # on every path including exceptions.
         job.password = None
         job.finished_at = time.time()
-        # Publish-last: result/deal_count/error/error_code are already set
-        # above by the time status flips to its terminal value, so a
+        # Publish-last: result/deal_count/symbols/error/error_code are
+        # already set above by the time status flips to its terminal value, so a
         # lock-free reader (get_job_view) never observes a "done"/"failed"
         # status before the fields it depends on are populated.
         job.status = STATUS_FAILED if job.error else STATUS_DONE
@@ -195,6 +227,7 @@ def get_job_view(job_id: str) -> Optional[dict]:
             "finished_at": job.finished_at,
             "deal_count": job.deal_count,
             "result": job.result,
+            "symbols": job.symbols,
             "error": job.error,
             "error_code": job.error_code,
         }

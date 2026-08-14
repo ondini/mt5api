@@ -24,21 +24,80 @@ def _make_job(job_id="test-job", account=52414311, password="secret", server="IC
 
 # ── process_sync_job (pure, no threads, no Flask) ──────────────────────────────
 
-def test_process_sync_job_success(sample_deal):
+def test_process_sync_job_success(sample_deal, sample_history_order, sample_symbol_info):
     job = _make_job()
     with (
         patch("MetaTrader5.terminal_info", return_value=object()),
         patch("MetaTrader5.login", return_value=True),
         patch("MetaTrader5.history_deals_get", return_value=(sample_deal,)),
+        patch("MetaTrader5.history_orders_get", return_value=(sample_history_order,)),
+        patch("MetaTrader5.symbol_info", return_value=sample_symbol_info),
     ):
         result = sync_worker.process_sync_job(job)
 
     assert result.status == STATUS_DONE
     assert result.error is None
     assert result.deal_count == 1
-    assert result.result == [sample_deal._asdict()]
+    expected_deal = sample_deal._asdict()
+    expected_deal["order_type"] = sample_history_order.type
+    assert result.result == [expected_deal]
+    assert result.symbols == {"EURUSD": 100000.0}
     assert result.password is None
     assert result.finished_at is not None
+
+
+# ── order_type / symbols enrichment ─────────────────────────────────────────
+
+def test_process_sync_job_enrichment_dedupes_symbol_lookups(sample_deal, sample_history_order, sample_symbol_info):
+    """Two deals sharing a symbol resolve that symbol's contract size once."""
+    other_deal = sample_deal._replace(ticket=88888, order=54321)
+    job = _make_job()
+    with (
+        patch("MetaTrader5.terminal_info", return_value=object()),
+        patch("MetaTrader5.login", return_value=True),
+        patch("MetaTrader5.history_deals_get", return_value=(sample_deal, other_deal)),
+        patch("MetaTrader5.history_orders_get", return_value=(sample_history_order,)) as mock_orders,
+        patch("MetaTrader5.symbol_info", return_value=sample_symbol_info) as mock_symbol_info,
+    ):
+        result = sync_worker.process_sync_job(job)
+
+    assert result.status == STATUS_DONE
+    assert [deal["order_type"] for deal in result.result] == [sample_history_order.type] * 2
+    assert result.symbols == {"EURUSD": 100000.0}
+    assert mock_symbol_info.call_count == 1
+    assert mock_orders.call_count == 2
+
+
+def test_process_sync_job_enrichment_missing_order_leaves_order_type_none(sample_deal, sample_symbol_info):
+    job = _make_job()
+    with (
+        patch("MetaTrader5.terminal_info", return_value=object()),
+        patch("MetaTrader5.login", return_value=True),
+        patch("MetaTrader5.history_deals_get", return_value=(sample_deal,)),
+        patch("MetaTrader5.history_orders_get", return_value=None),
+        patch("MetaTrader5.symbol_info", return_value=sample_symbol_info),
+    ):
+        result = sync_worker.process_sync_job(job)
+
+    assert result.status == STATUS_DONE
+    assert result.result[0]["order_type"] is None
+    assert result.symbols == {"EURUSD": 100000.0}
+
+
+def test_process_sync_job_enrichment_missing_symbol_info_leaves_contract_size_none(sample_deal, sample_history_order):
+    job = _make_job()
+    with (
+        patch("MetaTrader5.terminal_info", return_value=object()),
+        patch("MetaTrader5.login", return_value=True),
+        patch("MetaTrader5.history_deals_get", return_value=(sample_deal,)),
+        patch("MetaTrader5.history_orders_get", return_value=(sample_history_order,)),
+        patch("MetaTrader5.symbol_info", return_value=None),
+    ):
+        result = sync_worker.process_sync_job(job)
+
+    assert result.status == STATUS_DONE
+    assert result.result[0]["order_type"] is not None
+    assert result.symbols == {"EURUSD": None}
 
 
 def test_process_sync_job_login_failure():
@@ -179,7 +238,9 @@ def test_sync_account_history_status_unknown_job(client):
     assert resp.status_code == 404
 
 
-def test_sync_account_history_status_reflects_processed_job(client, sample_deal):
+def test_sync_account_history_status_reflects_processed_job(
+    client, sample_deal, sample_history_order, sample_symbol_info
+):
     resp = client.post(
         "/sync_account_history",
         query_string={
@@ -196,6 +257,8 @@ def test_sync_account_history_status_reflects_processed_job(client, sample_deal)
         patch("MetaTrader5.terminal_info", return_value=object()),
         patch("MetaTrader5.login", return_value=True),
         patch("MetaTrader5.history_deals_get", return_value=(sample_deal,)),
+        patch("MetaTrader5.history_orders_get", return_value=(sample_history_order,)),
+        patch("MetaTrader5.symbol_info", return_value=sample_symbol_info),
     ):
         sync_worker.process_sync_job(job)
 
@@ -204,4 +267,7 @@ def test_sync_account_history_status_reflects_processed_job(client, sample_deal)
     body = status_resp.get_json()
     assert body["status"] == STATUS_DONE
     assert body["deal_count"] == 1
-    assert body["result"] == [sample_deal._asdict()]
+    expected_deal = sample_deal._asdict()
+    expected_deal["order_type"] = sample_history_order.type
+    assert body["result"] == [expected_deal]
+    assert body["symbols"] == {"EURUSD": 100000.0}
