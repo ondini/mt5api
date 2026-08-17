@@ -24,6 +24,18 @@ DEMO_ACCOUNT  = 52414311
 DEMO_PASSWORD = "77lmYn!!5@YRn$"
 DEMO_SERVER   = "ICMarketsEU-Demo"
 
+# From mt5_login_debug/testmt5.ipynb — a second (and third) broker/account
+# pair used to prove /sync_account_history's mt5.initialize(login=...) call
+# can log a fresh account into the shared process-wide MT5 session, not just
+# the account this module happens to test everything else against.
+NOTEBOOK_ACCOUNT  = 62134628
+NOTEBOOK_PASSWORD = "lk3%qRemwx"
+NOTEBOOK_SERVER   = "PepperstoneUK-Demo"
+
+NOTEBOOK_ACCOUNT_2  = 591917355
+NOTEBOOK_PASSWORD_2 = "!vkOnq7EvR"
+NOTEBOOK_SERVER_2   = "FxPro-MT5 Demo"
+
 _env = dotenv_values(Path(__file__).parent.parent / ".env")
 _API_KEY = os.environ.get("API_KEY") or _env.get("API_KEY") or ""
 
@@ -65,6 +77,40 @@ def _health():
     return body
 
 
+def _run_sync_job(account, password, server, days=1, timeout=30):
+    """
+    POST /sync_account_history and poll until the job reaches a terminal
+    status. This is now the *only* supported way to establish a logged-in
+    MT5 session (raw /login is gone) — it drives mt5.initialize(login=...)
+    on the single worker thread exactly like the real production path.
+    Returns (post_status_code, final_job_view_or_post_body).
+    """
+    to_dt = datetime.now(timezone.utc)
+    from_dt = to_dt - timedelta(days=days)
+    status, body = _post("/sync_account_history", {
+        "account":   account,
+        "password":  password,
+        "server":    server,
+        "from_date": from_dt.strftime("%Y-%m-%dT%H:%M:%S"),
+        "to_date":   to_dt.strftime("%Y-%m-%dT%H:%M:%S"),
+    })
+    if status != 202:
+        return status, body
+
+    job_id = body["job_id"]
+    deadline = time.time() + timeout
+    final = None
+    while time.time() < deadline:
+        s, b = _get(f"/sync_account_history/{job_id}")
+        assert s == 200
+        if b["status"] in ("done", "failed"):
+            final = b
+            break
+        time.sleep(0.5)
+    assert final is not None, "sync job did not finish within timeout"
+    return status, final
+
+
 # ---------------------------------------------------------------------------
 # Module-level skip guard
 # ---------------------------------------------------------------------------
@@ -76,14 +122,11 @@ def server_reachable():
     except Exception:
         pytest.skip("MT5 API server not reachable — skipping live tests")
     if not health.get("mt5_terminal_connected"):
-        # Terminal may have been shut down by a previous test run — try re-login
-        status, _ = _post("/login", {
-            "account":  DEMO_ACCOUNT,
-            "password": DEMO_PASSWORD,
-            "server":   DEMO_SERVER,
-        })
-        if status != 200:
-            pytest.skip("MT5 terminal not connected and re-login failed — skipping live tests")
+        # Terminal may not have a session yet — establish one the only
+        # supported way, via a sync job (mt5.initialize(login=...)).
+        _, final = _run_sync_job(DEMO_ACCOUNT, DEMO_PASSWORD, DEMO_SERVER)
+        if final.get("status") != "done":
+            pytest.skip("MT5 terminal not connected and sync login failed — skipping live tests")
 
 
 # ---------------------------------------------------------------------------
@@ -92,53 +135,15 @@ def server_reachable():
 
 @pytest.fixture(scope="module")
 def session():
-    """Ensure we are logged in; yield account info. No logout on teardown — auth cycle tests handle that."""
-    status, body = _post("/login", {
-        "account":  DEMO_ACCOUNT,
-        "password": DEMO_PASSWORD,
-        "server":   DEMO_SERVER,
-    })
-    assert status == 200, f"Login failed ({status}): {body}"
-    yield body
+    """Ensure the demo account is logged in (process-wide MT5 session) via
+    /sync_account_history; yield the finished job view."""
+    _, final = _run_sync_job(DEMO_ACCOUNT, DEMO_PASSWORD, DEMO_SERVER)
+    assert final["status"] == "done", f"Login via sync job failed: {final.get('error')}"
+    yield final
 
 
 # ---------------------------------------------------------------------------
-# 1. Logout / login cycle
-# ---------------------------------------------------------------------------
-
-class TestAuthCycle:
-    def test_logout(self):
-        status, body = _post("/logout")
-        assert status == 200
-        assert body.get("status") == "logged out"
-
-    def test_health_reflects_logged_out(self):
-        # logout calls mt5.shutdown() which drops the terminal IPC connection entirely
-        h = _health()
-        assert h["mt5_account_logged_in"] is False
-        assert h["mt5_account"] is None
-
-    def test_login(self):
-        status, body = _post("/login", {
-            "account":  DEMO_ACCOUNT,
-            "password": DEMO_PASSWORD,
-            "server":   DEMO_SERVER,
-        })
-        assert status == 200
-        assert body["login"] == DEMO_ACCOUNT
-        assert body["server"] == DEMO_SERVER
-        assert "balance" in body
-        assert "currency" in body
-
-    def test_health_reflects_logged_in(self):
-        h = _health()
-        assert h["mt5_terminal_connected"] is True
-        assert h["mt5_account_logged_in"] is True
-        assert h["mt5_account"] == DEMO_ACCOUNT
-
-
-# ---------------------------------------------------------------------------
-# 2. Symbol data
+# 1. Symbol data
 # ---------------------------------------------------------------------------
 
 class TestSymbol:
@@ -162,7 +167,7 @@ class TestSymbol:
 
 
 # ---------------------------------------------------------------------------
-# 3. OHLC data
+# 2. OHLC data
 # ---------------------------------------------------------------------------
 
 class TestData:
@@ -193,7 +198,7 @@ class TestData:
 
 
 # ---------------------------------------------------------------------------
-# 4. History
+# 3. History
 # ---------------------------------------------------------------------------
 
 class TestHistory:
@@ -277,7 +282,7 @@ class TestHistory:
 
 
 # ---------------------------------------------------------------------------
-# 5. Positions
+# 4. Positions
 # ---------------------------------------------------------------------------
 
 class TestPositions:
@@ -294,37 +299,15 @@ class TestPositions:
 
 
 # ---------------------------------------------------------------------------
-# 6. Sync account history (background job queue)
+# 5. Sync account history (background job queue)
 # ---------------------------------------------------------------------------
 
 class TestSyncAccountHistory:
     def test_sync_history_end_to_end(self):
-        to_dt = datetime.now(timezone.utc)
-        from_dt = to_dt - timedelta(days=30)
-        status, body = _post("/sync_account_history", {
-            "account":   DEMO_ACCOUNT,
-            "password":  DEMO_PASSWORD,
-            "server":    DEMO_SERVER,
-            "from_date": from_dt.strftime("%Y-%m-%dT%H:%M:%S"),
-            "to_date":   to_dt.strftime("%Y-%m-%dT%H:%M:%S"),
-        })
+        # Real background worker, real terminal — _run_sync_job's poll loop
+        # is the one place a bounded wait is appropriate for this feature.
+        status, final = _run_sync_job(DEMO_ACCOUNT, DEMO_PASSWORD, DEMO_SERVER, days=30)
         assert status == 202
-        assert body["status"] == "queued"
-        job_id = body["job_id"]
-
-        # Real background worker, real terminal — the one place a bounded
-        # poll loop is appropriate for this feature.
-        deadline = time.time() + 30
-        final = None
-        while time.time() < deadline:
-            s, b = _get(f"/sync_account_history/{job_id}")
-            assert s == 200
-            if b["status"] in ("done", "failed"):
-                final = b
-                break
-            time.sleep(0.5)
-
-        assert final is not None, "sync job did not finish within 30s"
         assert final["status"] == "done", final.get("error")
         assert isinstance(final["result"], list)
 
@@ -345,3 +328,54 @@ class TestSyncAccountHistory:
             })
             assert status == 202
             assert body["status"] == "queued"
+
+
+# ---------------------------------------------------------------------------
+# 6. Login via /sync_account_history across every known credential set
+# ---------------------------------------------------------------------------
+
+class TestSyncAccountHistoryCredentials:
+    """
+    Exercise mt5.initialize(login=...) — the single-call login this module
+    replaced mt5.initialize() + mt5.login() with — against every credential
+    set on hand: the demo account used throughout this file, plus both
+    accounts from mt5_login_debug/testmt5.ipynb (a different broker each).
+    Confirms the new login path isn't accidentally tied to one broker/server
+    and that it can swap the process-wide MT5 session between accounts.
+    """
+
+    @pytest.mark.parametrize(
+        "account,password,server",
+        [
+            (DEMO_ACCOUNT, DEMO_PASSWORD, DEMO_SERVER),
+            (NOTEBOOK_ACCOUNT, NOTEBOOK_PASSWORD, NOTEBOOK_SERVER),
+            (NOTEBOOK_ACCOUNT_2, NOTEBOOK_PASSWORD_2, NOTEBOOK_SERVER_2),
+        ],
+        ids=["icmarkets-demo", "pepperstone-demo", "fxpro-demo"],
+    )
+    def test_sync_history_logs_in_and_reflects_in_health(self, account, password, server):
+        status, final = _run_sync_job(account, password, server, days=7)
+        assert status == 202
+        assert final["status"] == "done", final.get("error")
+        assert isinstance(final["result"], list)
+
+        h = _health()
+        assert h["mt5_terminal_connected"] is True
+        assert h["mt5_account_logged_in"] is True
+        assert h["mt5_account"] == account
+
+    def test_sync_history_switches_account_between_jobs(self):
+        """Two back-to-back jobs for different accounts must each end up
+        logged into their own account — proving initialize(login=) actually
+        re-authorizes rather than silently reusing a stale session."""
+        _, first = _run_sync_job(DEMO_ACCOUNT, DEMO_PASSWORD, DEMO_SERVER, days=7)
+        assert first["status"] == "done", first.get("error")
+        assert _health()["mt5_account"] == DEMO_ACCOUNT
+
+        _, second = _run_sync_job(NOTEBOOK_ACCOUNT, NOTEBOOK_PASSWORD, NOTEBOOK_SERVER, days=7)
+        assert second["status"] == "done", second.get("error")
+        assert _health()["mt5_account"] == NOTEBOOK_ACCOUNT
+
+        # Leave the session back on the demo account for any later test run.
+        _, restore = _run_sync_job(DEMO_ACCOUNT, DEMO_PASSWORD, DEMO_SERVER, days=1)
+        assert restore["status"] == "done", restore.get("error")

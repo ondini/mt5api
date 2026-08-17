@@ -1,8 +1,10 @@
 """
 Combined login + history-fetch endpoint, backed by sync_worker's single
-background worker thread. See sync_worker.py for why this closes the
-cross-account race that exists between separate /login + /history_deals_get
-calls, and for the known limitation that other routes are not synchronized
+background worker thread. This is the only way to authenticate against
+this API — there is no standalone /login. See sync_worker.py for why
+routing every login through this worker closes the cross-account race that
+raw, unsynchronized login + history_deals_get calls would otherwise have,
+and for the known limitation that other routes are not synchronized
 against this worker.
 """
 import logging

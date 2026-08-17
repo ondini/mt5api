@@ -5,17 +5,24 @@ MetaTrader5 has exactly one global, process-wide session — one terminal, one
 "currently logged in account" at a time, never per-request. This module is
 the sole synchronized path for the login+history-fetch flow: a single
 dedicated worker thread is the *only* code path allowed to call
-mt5.login()/mt5.history_deals_get() for this flow, processing jobs strictly
-one at a time from an unbounded FIFO queue. Because there is exactly one
-consumer and each job runs to completion before the next starts, two jobs
-can never interleave — this is what eliminates the cross-account race, not
-a lock.
+mt5.initialize()/mt5.history_deals_get() for this flow, processing jobs
+strictly one at a time from an unbounded FIFO queue. Because there is
+exactly one consumer and each job runs to completion before the next
+starts, two jobs can never interleave — this is what eliminates the
+cross-account race, not a lock.
 
-Known limitation: pre-existing routes (/login, /history_deals_get,
-/symbol_info_tick, /get_positions, etc.) are NOT routed through this worker
-and remain unsynchronized against each other and against sync jobs — MT5's
-session is process-wide regardless of which code path touches it. Accepted
-because this API is now used exclusively via /sync_account_history for the
+Login uses the single-call form mt5.initialize(login=, password=, server=)
+rather than a separate mt5.initialize() + mt5.login() pair: it starts the
+terminal (if not already running) and authorizes the given account in one
+IPC round trip, and re-authorizes correctly even when a terminal is already
+running under a different account — which is exactly the "next job, next
+account" case this worker cycles through all day.
+
+Known limitation: pre-existing routes (/history_deals_get, /symbol_info_tick,
+/get_positions, etc.) are NOT routed through this worker and remain
+unsynchronized against each other and against sync jobs — MT5's session is
+process-wide regardless of which code path touches it. Accepted because this
+API is now used exclusively via /sync_account_history for the
 history-backfill flow.
 
 Beyond login+fetch, this worker also resolves everything a caller would
@@ -130,11 +137,7 @@ def process_sync_job(job: Job) -> Job:
     job.started_at = time.time()
     job.status = STATUS_PROCESSING
     try:
-        if mt5.terminal_info() is None and not mt5.initialize():
-            job.error = f"Failed to initialize MT5 terminal: {mt5.last_error()}"
-            return job
-
-        authorized = mt5.login(job.account, password=job.password, server=job.server)
+        authorized = mt5.initialize(login=job.account, password=job.password, server=job.server)
         if not authorized:
             code, msg = mt5.last_error()
             job.error = f"Login failed: {msg}"

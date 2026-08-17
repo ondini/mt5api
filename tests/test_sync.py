@@ -27,14 +27,14 @@ def _make_job(job_id="test-job", account=52414311, password="secret", server="IC
 def test_process_sync_job_success(sample_deal, sample_history_order, sample_symbol_info):
     job = _make_job()
     with (
-        patch("MetaTrader5.terminal_info", return_value=object()),
-        patch("MetaTrader5.login", return_value=True),
+        patch("MetaTrader5.initialize", return_value=True) as mock_initialize,
         patch("MetaTrader5.history_deals_get", return_value=(sample_deal,)),
         patch("MetaTrader5.history_orders_get", return_value=(sample_history_order,)),
         patch("MetaTrader5.symbol_info", return_value=sample_symbol_info),
     ):
         result = sync_worker.process_sync_job(job)
 
+    mock_initialize.assert_called_once_with(login=job.account, password="secret", server=job.server)
     assert result.status == STATUS_DONE
     assert result.error is None
     assert result.deal_count == 1
@@ -53,8 +53,7 @@ def test_process_sync_job_enrichment_dedupes_symbol_lookups(sample_deal, sample_
     other_deal = sample_deal._replace(ticket=88888, order=54321)
     job = _make_job()
     with (
-        patch("MetaTrader5.terminal_info", return_value=object()),
-        patch("MetaTrader5.login", return_value=True),
+        patch("MetaTrader5.initialize", return_value=True),
         patch("MetaTrader5.history_deals_get", return_value=(sample_deal, other_deal)),
         patch("MetaTrader5.history_orders_get", return_value=(sample_history_order,)) as mock_orders,
         patch("MetaTrader5.symbol_info", return_value=sample_symbol_info) as mock_symbol_info,
@@ -71,8 +70,7 @@ def test_process_sync_job_enrichment_dedupes_symbol_lookups(sample_deal, sample_
 def test_process_sync_job_enrichment_missing_order_leaves_order_type_none(sample_deal, sample_symbol_info):
     job = _make_job()
     with (
-        patch("MetaTrader5.terminal_info", return_value=object()),
-        patch("MetaTrader5.login", return_value=True),
+        patch("MetaTrader5.initialize", return_value=True),
         patch("MetaTrader5.history_deals_get", return_value=(sample_deal,)),
         patch("MetaTrader5.history_orders_get", return_value=None),
         patch("MetaTrader5.symbol_info", return_value=sample_symbol_info),
@@ -87,8 +85,7 @@ def test_process_sync_job_enrichment_missing_order_leaves_order_type_none(sample
 def test_process_sync_job_enrichment_missing_symbol_info_leaves_contract_size_none(sample_deal, sample_history_order):
     job = _make_job()
     with (
-        patch("MetaTrader5.terminal_info", return_value=object()),
-        patch("MetaTrader5.login", return_value=True),
+        patch("MetaTrader5.initialize", return_value=True),
         patch("MetaTrader5.history_deals_get", return_value=(sample_deal,)),
         patch("MetaTrader5.history_orders_get", return_value=(sample_history_order,)),
         patch("MetaTrader5.symbol_info", return_value=None),
@@ -103,8 +100,7 @@ def test_process_sync_job_enrichment_missing_symbol_info_leaves_contract_size_no
 def test_process_sync_job_login_failure():
     job = _make_job()
     with (
-        patch("MetaTrader5.terminal_info", return_value=object()),
-        patch("MetaTrader5.login", return_value=False),
+        patch("MetaTrader5.initialize", return_value=False),
         patch("MetaTrader5.last_error", return_value=(-6, "Authorization failed")),
     ):
         result = sync_worker.process_sync_job(job)
@@ -119,8 +115,7 @@ def test_process_sync_job_login_failure():
 def test_process_sync_job_history_fetch_failure():
     job = _make_job()
     with (
-        patch("MetaTrader5.terminal_info", return_value=object()),
-        patch("MetaTrader5.login", return_value=True),
+        patch("MetaTrader5.initialize", return_value=True),
         patch("MetaTrader5.history_deals_get", return_value=None),
     ):
         result = sync_worker.process_sync_job(job)
@@ -132,7 +127,7 @@ def test_process_sync_job_history_fetch_failure():
 
 def test_process_sync_job_exception_still_clears_password():
     job = _make_job()
-    with patch("MetaTrader5.terminal_info", side_effect=RuntimeError("boom")):
+    with patch("MetaTrader5.initialize", side_effect=RuntimeError("boom")):
         result = sync_worker.process_sync_job(job)
 
     assert result.status == STATUS_FAILED
@@ -254,8 +249,7 @@ def test_sync_account_history_status_reflects_processed_job(
     # real worker calls, no need to wait on the real background thread.
     job = sync_worker._jobs[job_id]
     with (
-        patch("MetaTrader5.terminal_info", return_value=object()),
-        patch("MetaTrader5.login", return_value=True),
+        patch("MetaTrader5.initialize", return_value=True),
         patch("MetaTrader5.history_deals_get", return_value=(sample_deal,)),
         patch("MetaTrader5.history_orders_get", return_value=(sample_history_order,)),
         patch("MetaTrader5.symbol_info", return_value=sample_symbol_info),
