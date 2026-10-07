@@ -49,6 +49,18 @@ from lib import get_order_from_ticket
 
 logger = logging.getLogger(__name__)
 
+# Dedicated file handler so every sync job's outcome (account/server/error)
+# is persisted regardless of root logging config or where stdout/stderr go
+# under the Scheduled Task — in-memory Job records are evicted by
+# _cleanup_expired_jobs and lost entirely on restart, so this file is the
+# only durable record of why a given user's sync failed.
+_log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "sync_jobs.log")
+os.makedirs(os.path.dirname(_log_path), exist_ok=True)
+_file_handler = logging.FileHandler(_log_path)
+_file_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
+logger.addHandler(_file_handler)
+logger.setLevel(logging.INFO)
+
 STATUS_QUEUED = "queued"
 STATUS_PROCESSING = "processing"
 STATUS_DONE = "done"
@@ -165,6 +177,17 @@ def process_sync_job(job: Job) -> Job:
         # lock-free reader (get_job_view) never observes a "done"/"failed"
         # status before the fields it depends on are populated.
         job.status = STATUS_FAILED if job.error else STATUS_DONE
+        duration = job.finished_at - (job.started_at or job.finished_at)
+        if job.status == STATUS_FAILED:
+            logger.error(
+                "sync job %s FAILED account=%s server=%s error_code=%s error=%s duration=%.2fs",
+                job.job_id, job.account, job.server, job.error_code, job.error, duration,
+            )
+        else:
+            logger.info(
+                "sync job %s DONE account=%s server=%s deals=%s duration=%.2fs",
+                job.job_id, job.account, job.server, job.deal_count, duration,
+            )
     return job
 
 
