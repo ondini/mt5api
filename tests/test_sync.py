@@ -113,6 +113,42 @@ def test_process_sync_job_login_failure():
     assert result.error_code == -6
     assert result.result is None
     assert result.password is None
+    assert "server" in result.hint.lower()
+
+
+def test_process_sync_job_login_failure_unknown_code_gets_default_hint():
+    job = _make_job()
+    with (
+        patch("MetaTrader5.initialize", return_value=False),
+        patch("MetaTrader5.last_error", return_value=(-99999, "Something new")),
+    ):
+        result = sync_worker.process_sync_job(job)
+
+    assert result.status == STATUS_FAILED
+    assert result.hint == sync_worker._DEFAULT_LOGIN_HINT
+
+
+def test_job_view_includes_hint_and_none_on_success(sample_deal, sample_history_order, sample_symbol_info):
+    failed = _make_job()
+    with (
+        patch("MetaTrader5.initialize", return_value=False),
+        patch("MetaTrader5.last_error", return_value=(-6, "Authorization failed")),
+    ):
+        sync_worker.process_sync_job(failed)
+    sync_worker._jobs[failed.job_id] = failed
+    assert sync_worker.get_job_view(failed.job_id)["hint"] == failed.hint
+
+    ok = _make_job()
+    ok.job_id = "test-job-ok"
+    with (
+        patch("MetaTrader5.initialize", return_value=True),
+        patch("MetaTrader5.history_deals_get", return_value=(sample_deal,)),
+        patch("MetaTrader5.history_orders_get", return_value=(sample_history_order,)),
+        patch("MetaTrader5.symbol_info", return_value=sample_symbol_info),
+    ):
+        sync_worker.process_sync_job(ok)
+    sync_worker._jobs[ok.job_id] = ok
+    assert sync_worker.get_job_view(ok.job_id)["hint"] is None
 
 
 def test_process_sync_job_history_fetch_failure():

@@ -87,6 +87,26 @@ class Job:
     symbols: Optional[dict] = None
     error: Optional[str] = None
     error_code: Optional[int] = None
+    hint: Optional[str] = None
+
+
+# MT5 Python API result codes (mt5.last_error()[0]) -> likely causes for a failed login.
+_LOGIN_HINTS = {
+    -2: "MT5 rejected the login arguments. Check that account is numeric and password and server are non-empty and correctly typed.",
+    -6: "Authorization failed. Most common causes: wrong password (trading vs investor password mix-up), "
+        "account number not on this server, or a server name that is misspelled or not yet known to this "
+        "terminal (e.g. a broker server variant such as FTMO-Server3 vs FTMO-Server4). Verify the exact "
+        "server name shown in the broker's account email; if credentials are right, the terminal operator "
+        "may need to register the server once.",
+    -10003: "MT5 terminal could not be reached by the API process (IPC init failed). Server-side problem, not your credentials; retry later or contact the operator.",
+    -10004: "Could not connect to the broker server. The server name may be wrong or unreachable from this host; retry, then verify the server name.",
+    -10005: "Timed out connecting to the broker server. Retry; if it persists, the server name may be wrong or the broker is down.",
+}
+_DEFAULT_LOGIN_HINT = "Login failed for an unrecognized reason. See error_code and error for MT5's own message."
+
+
+def _login_hint(code: Optional[int]) -> str:
+    return _LOGIN_HINTS.get(code, _DEFAULT_LOGIN_HINT)
 
 
 _queue: "queue.Queue[str]" = queue.Queue()  # maxsize=0 -> unbounded, put() never blocks/raises
@@ -163,11 +183,13 @@ def process_sync_job(job: Job) -> Job:
             code, msg = mt5.last_error()
             job.error = f"Login failed: {msg}"
             job.error_code = code
+            job.hint = _login_hint(code)
             return job
 
         deals = mt5.history_deals_get(job.from_timestamp, job.to_timestamp)
         if deals is None:
             job.error = "Failed to get deals history"
+            job.hint = "Login succeeded but MT5 returned no history. Check that from_date/to_date are valid and the account has history in that range; retry if it persists."
             return job
 
         job.result = [deal._asdict() for deal in deals]
@@ -265,6 +287,7 @@ def get_job_view(job_id: str) -> Optional[dict]:
             "symbols": job.symbols,
             "error": job.error,
             "error_code": job.error_code,
+            "hint": job.hint,
         }
 
 
