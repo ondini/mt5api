@@ -96,6 +96,12 @@ _sequence_counter = itertools.count(1)
 _last_dispatched_sequence = 0
 _avg_job_seconds = 3.0  # seed matches empirically observed 2-4s login+fetch cost
 
+# mt5.initialize()'s IPC timeout in ms. MT5's default is 60s, and a login to
+# a server name the terminal can't resolve (a typo like "FTMO-Server 3") burns
+# all of it — while blocking the whole process, so every other request,
+# /health included, stalls too. Real logins take under 5s.
+_LOGIN_TIMEOUT_MS = int(os.environ.get("MT5_LOGIN_TIMEOUT_MS", 20000))
+
 _worker_thread: Optional[threading.Thread] = None
 _worker_start_lock = threading.Lock()
 
@@ -149,7 +155,10 @@ def process_sync_job(job: Job) -> Job:
     job.started_at = time.time()
     job.status = STATUS_PROCESSING
     try:
-        authorized = mt5.initialize(login=job.account, password=job.password, server=job.server)
+        authorized = mt5.initialize(
+            login=job.account, password=job.password, server=job.server,
+            timeout=_LOGIN_TIMEOUT_MS,
+        )
         if not authorized:
             code, msg = mt5.last_error()
             job.error = f"Login failed: {msg}"
