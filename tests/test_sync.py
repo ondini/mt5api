@@ -34,7 +34,10 @@ def test_process_sync_job_success(sample_deal, sample_history_order, sample_symb
     ):
         result = sync_worker.process_sync_job(job)
 
-    mock_initialize.assert_called_once_with(login=job.account, password="secret", server=job.server)
+    mock_initialize.assert_called_once_with(
+        login=job.account, password="secret", server=job.server,
+        timeout=sync_worker._LOGIN_TIMEOUT_MS,
+    )
     assert result.status == STATUS_DONE
     assert result.error is None
     assert result.deal_count == 1
