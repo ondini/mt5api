@@ -267,6 +267,29 @@ def test_sync_account_history_accepted_and_queued(client):
     assert "password" not in body
 
 
+def test_sync_account_history_accepts_json_body(client):
+    resp = client.post(
+        "/sync_account_history",
+        json={
+            "account": 52414311, "password": "pw", "server": "ICMarketsEU-Demo",
+            "from_date": "2026-07-01T00:00:00", "to_date": "2026-07-31T00:00:00",
+        },
+    )
+    assert resp.status_code == 202
+    job = sync_worker._jobs[resp.get_json()["job_id"]]
+    assert (job.account, job.password, job.server) == (52414311, "pw", "ICMarketsEU-Demo")
+
+
+def test_sync_account_history_json_body_missing_or_wrong_types(client):
+    base = {
+        "account": 1, "password": "pw", "server": "S",
+        "from_date": "2026-07-01T00:00:00", "to_date": "2026-07-31T00:00:00",
+    }
+    for bad in ({**base, "password": None}, {**base, "server": 5},
+                {**base, "account": True}, {**base, "account": [1]}):
+        assert client.post("/sync_account_history", json=bad).status_code == 400
+
+
 def test_sync_account_history_status_unknown_job(client):
     resp = client.get("/sync_account_history/does-not-exist")
     assert resp.status_code == 404

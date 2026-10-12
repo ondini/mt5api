@@ -23,16 +23,22 @@ logger = logging.getLogger(__name__)
 @swag_from({
     'tags': ['Sync'],
     'parameters': [
-        {'name': 'account', 'in': 'query', 'type': 'integer', 'required': True,
-         'description': 'MT5 account number.'},
-        {'name': 'password', 'in': 'query', 'type': 'string', 'required': True,
-         'description': 'MT5 account password.'},
-        {'name': 'server', 'in': 'query', 'type': 'string', 'required': True,
-         'description': 'MT5 broker server name.'},
-        {'name': 'from_date', 'in': 'query', 'type': 'string', 'format': 'date-time', 'required': True,
-         'description': 'Start date in ISO format.'},
-        {'name': 'to_date', 'in': 'query', 'type': 'string', 'format': 'date-time', 'required': True,
-         'description': 'End date in ISO format.'},
+        {'name': 'body', 'in': 'body', 'required': True,
+         'description': 'JSON object. Query-string parameters are still accepted '
+                        'but deprecated: they leak the password into logs.',
+         'schema': {
+             'type': 'object',
+             'required': ['account', 'password', 'server', 'from_date', 'to_date'],
+             'properties': {
+                 'account': {'type': 'integer', 'description': 'MT5 account number.'},
+                 'password': {'type': 'string', 'description': 'MT5 account password.'},
+                 'server': {'type': 'string', 'description': 'MT5 broker server name.'},
+                 'from_date': {'type': 'string', 'format': 'date-time',
+                               'description': 'Start date in ISO format.'},
+                 'to_date': {'type': 'string', 'format': 'date-time',
+                             'description': 'End date in ISO format.'},
+             },
+         }},
     ],
     'responses': {
         202: {
@@ -50,11 +56,20 @@ def sync_account_history_endpoint():
     description: Enqueues a combined login and deal-history fetch for the given account, processed serially by a single background worker so concurrent requests for different accounts can never race each other.
     """
     try:
-        account = request.args.get('account')
-        password = request.args.get('password')
-        server = request.args.get('server')
-        from_date = request.args.get('from_date')
-        to_date = request.args.get('to_date')
+        # Credentials belong in the JSON body: a query string ends up in
+        # access logs, proxies and client-side exception text. The query
+        # string is still read so older clients keep working during rollout.
+        body = request.get_json(silent=True)
+        params = body if isinstance(body, dict) else request.args
+        account = params.get('account')
+        password = params.get('password')
+        server = params.get('server')
+        from_date = params.get('from_date')
+        to_date = params.get('to_date')
+        if not isinstance(account, (str, int)) or isinstance(account, bool):
+            account = None
+        if not all(isinstance(v, str) for v in (password, server, from_date, to_date)):
+            password = server = from_date = to_date = None
 
         if not all([account, password, server, from_date, to_date]):
             return jsonify({
@@ -63,7 +78,7 @@ def sync_account_history_endpoint():
 
         try:
             account = int(account)
-        except ValueError:
+        except (TypeError, ValueError):
             return jsonify({"error": "Invalid account format"}), 400
 
         try:
