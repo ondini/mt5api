@@ -1,4 +1,5 @@
 """Tests for the sync-account-history job queue (sync_worker.py + routes/sync.py)."""
+import itertools
 import time
 from unittest.mock import patch
 
@@ -20,6 +21,17 @@ def _make_job(job_id="test-job", account=52414311, password="secret", server="IC
         to_timestamp=1785542400,
         sequence=1,
     )
+
+
+_real_wait_for_history_sync = sync_worker._wait_for_history_sync
+
+
+@pytest.fixture(autouse=True)
+def _history_already_synced():
+    # The settle loop sleeps between samples; tests of it call the real
+    # function via _real_wait_for_history_sync with time patched.
+    with patch("sync_worker._wait_for_history_sync", return_value=True):
+        yield
 
 
 # ── process_sync_job (pure, no threads, no Flask) ──────────────────────────────
@@ -162,6 +174,83 @@ def test_process_sync_job_history_fetch_failure():
     assert result.status == STATUS_FAILED
     assert result.error == "Failed to get deals history"
     assert result.password is None
+
+
+def test_process_sync_job_waits_for_history_before_fetching(sample_deal, sample_history_order, sample_symbol_info):
+    calls = []
+    with (
+        patch("MetaTrader5.initialize", return_value=True),
+        patch("sync_worker._wait_for_history_sync", side_effect=lambda: calls.append("wait") or True),
+        patch("MetaTrader5.history_deals_get", side_effect=lambda *a: calls.append("fetch") or (sample_deal,)),
+        patch("MetaTrader5.history_orders_get", return_value=(sample_history_order,)),
+        patch("MetaTrader5.symbol_info", return_value=sample_symbol_info),
+    ):
+        result = sync_worker.process_sync_job(_make_job())
+
+    assert calls == ["wait", "fetch"]
+    assert result.status == STATUS_DONE
+
+
+def test_process_sync_job_unsettled_history_still_returns_deals(sample_deal, sample_history_order, sample_symbol_info):
+    with (
+        patch("MetaTrader5.initialize", return_value=True),
+        patch("sync_worker._wait_for_history_sync", return_value=False),
+        patch("MetaTrader5.history_deals_get", return_value=(sample_deal,)),
+        patch("MetaTrader5.history_orders_get", return_value=(sample_history_order,)),
+        patch("MetaTrader5.symbol_info", return_value=sample_symbol_info),
+    ):
+        result = sync_worker.process_sync_job(_make_job())
+
+    assert result.status == STATUS_DONE
+    assert result.deal_count == 1
+
+
+class _FakeClock:
+    """Drives time.monotonic/time.sleep so the settle loop runs instantly."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+def _run_settle(totals):
+    clock = _FakeClock()
+    with (
+        patch("MetaTrader5.history_deals_total", side_effect=totals) as mock_total,
+        patch("sync_worker.time.monotonic", clock.monotonic),
+        patch("sync_worker.time.sleep", clock.sleep),
+    ):
+        return _real_wait_for_history_sync(), mock_total.call_count
+
+
+def test_wait_for_history_sync_returns_once_count_holds_steady():
+    # Login lands on a partial cache (3 deals), the download finishes (71).
+    settled, samples = _run_settle([3, 71, 71, 71])
+    assert settled is True
+    assert samples == 4
+
+
+def test_wait_for_history_sync_waits_out_an_empty_cache():
+    settled, samples = _run_settle([0, 0, 5, 5, 5])
+    # 0, 0 is one steady sample, not two — it keeps going until 5 holds.
+    assert settled is True
+    assert samples == 5
+
+
+def test_wait_for_history_sync_gives_up_after_timeout():
+    settled, samples = _run_settle(itertools.count())
+    assert settled is False
+    assert samples == 1 + int(sync_worker._HISTORY_SETTLE_TIMEOUT_S / sync_worker._HISTORY_SETTLE_INTERVAL_S)
+
+
+def test_wait_for_history_sync_unreadable_count_never_counts_as_steady():
+    settled, _ = _run_settle([None] * 100)
+    assert settled is False
 
 
 def test_process_sync_job_exception_still_clears_password():

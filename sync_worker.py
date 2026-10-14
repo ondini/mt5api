@@ -122,6 +122,21 @@ _avg_job_seconds = 3.0  # seed matches empirically observed 2-4s login+fetch cos
 # /health included, stalls too. Real logins take under 5s.
 _LOGIN_TIMEOUT_MS = int(os.environ.get("MT5_LOGIN_TIMEOUT_MS", 20000))
 
+# After a login switches accounts, the terminal downloads that account's deal
+# history in the background; history_deals_get() answers from whatever has
+# arrived so far, so a fetch straight after login can be missing recent deals
+# or come back empty. Callers advance their sync watermark on success, so a
+# short answer loses those deals for good. Wait until the account's total
+# deal count holds steady for _HISTORY_STABLE_SAMPLES consecutive samples,
+# _HISTORY_SETTLE_INTERVAL_S apart, giving up after _HISTORY_SETTLE_TIMEOUT_S.
+_HISTORY_SETTLE_INTERVAL_S = float(os.environ.get("MT5_HISTORY_SETTLE_INTERVAL_S", 1.0))
+_HISTORY_SETTLE_TIMEOUT_S = float(os.environ.get("MT5_HISTORY_SETTLE_TIMEOUT_S", 15.0))
+_HISTORY_STABLE_SAMPLES = 2
+# Bounds for the whole-account deal count: before any real account history,
+# and far enough ahead to cover broker server clocks running ahead of UTC.
+_HISTORY_EPOCH = 946684800  # 2000-01-01
+_HISTORY_LOOKAHEAD_S = 2 * 86400
+
 _worker_thread: Optional[threading.Thread] = None
 _worker_start_lock = threading.Lock()
 
@@ -166,6 +181,34 @@ def _enrich_deals(deals: list[dict]) -> dict:
     return symbols
 
 
+def _wait_for_history_sync() -> bool:
+    """
+    Block until the logged-in account's deal history has finished loading.
+
+    Returns True once the total deal count has stayed the same for
+    _HISTORY_STABLE_SAMPLES consecutive samples, False if it was still
+    changing (or unreadable) when _HISTORY_SETTLE_TIMEOUT_S ran out.
+    """
+    deadline = time.monotonic() + _HISTORY_SETTLE_TIMEOUT_S
+
+    def total():
+        return mt5.history_deals_total(_HISTORY_EPOCH, int(time.time()) + _HISTORY_LOOKAHEAD_S)
+
+    previous = total()
+    stable = 0
+    while time.monotonic() < deadline:
+        time.sleep(_HISTORY_SETTLE_INTERVAL_S)
+        current = total()
+        if current is not None and current == previous:
+            stable += 1
+            if stable >= _HISTORY_STABLE_SAMPLES:
+                return True
+        else:
+            stable = 0
+            previous = current
+    return False
+
+
 def process_sync_job(job: Job) -> Job:
     """
     Pure, directly-testable core: login, fetch history, mutate job in place.
@@ -185,6 +228,14 @@ def process_sync_job(job: Job) -> Job:
             job.error_code = code
             job.hint = _login_hint(code)
             return job
+
+        if not _wait_for_history_sync():
+            # Still return what we have: callers dedupe and re-fetch an
+            # overlapping window, so a partial answer is recovered next run.
+            logger.warning(
+                "sync job %s: history for account=%s server=%s still loading after %.0fs",
+                job.job_id, job.account, job.server, _HISTORY_SETTLE_TIMEOUT_S,
+            )
 
         deals = mt5.history_deals_get(job.from_timestamp, job.to_timestamp)
         if deals is None:
