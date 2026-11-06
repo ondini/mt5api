@@ -85,6 +85,7 @@ class Job:
     result: Optional[list] = None
     deal_count: Optional[int] = None
     symbols: Optional[dict] = None
+    open_positions: Optional[list] = None
     error: Optional[str] = None
     error_code: Optional[int] = None
     hint: Optional[str] = None
@@ -181,6 +182,30 @@ def _enrich_deals(deals: list[dict]) -> dict:
     return symbols
 
 
+def _open_positions() -> Optional[list]:
+    """
+    Positions still open on the logged-in account, with the swap they have
+    accrued so far. MT5 books swap on the closing deal only, so the deal
+    history alone shows none for an open position. None when MT5 can't list
+    them (callers then keep what they had instead of zeroing it).
+    """
+    positions = mt5.positions_get()
+    if positions is None:
+        return None
+    return [
+        {
+            "ticket": p.ticket,
+            "identifier": p.identifier,
+            "symbol": p.symbol,
+            "volume": p.volume,
+            "swap": p.swap,
+            "profit": p.profit,
+            "time_update": p.time_update,
+        }
+        for p in positions
+    ]
+
+
 def _wait_for_history_sync() -> bool:
     """
     Block until the logged-in account's deal history has finished loading.
@@ -246,6 +271,7 @@ def process_sync_job(job: Job) -> Job:
         job.result = [deal._asdict() for deal in deals]
         job.deal_count = len(job.result)
         job.symbols = _enrich_deals(job.result)
+        job.open_positions = _open_positions()
     except Exception as e:
         logger.error(f"Error in process_sync_job: {str(e)}")
         job.error = "Internal server error"
@@ -336,6 +362,7 @@ def get_job_view(job_id: str) -> Optional[dict]:
             "deal_count": job.deal_count,
             "result": job.result,
             "symbols": job.symbols,
+            "open_positions": job.open_positions,
             "error": job.error,
             "error_code": job.error_code,
             "hint": job.hint,

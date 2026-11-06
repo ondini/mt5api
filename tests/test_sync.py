@@ -416,3 +416,57 @@ def test_sync_account_history_status_reflects_processed_job(
     expected_deal["order_type"] = sample_history_order.type
     assert body["result"] == [expected_deal]
     assert body["symbols"] == {"EURUSD": 100000.0}
+
+
+# ── open positions (accrued swap) ──────────────────────────────────────────────
+
+def test_process_sync_job_returns_open_positions_with_swap(
+    sample_deal, sample_history_order, sample_symbol_info, sample_position
+):
+    position = sample_position._replace(swap=74.31)
+    job = _make_job()
+    with (
+        patch("MetaTrader5.initialize", return_value=True),
+        patch("MetaTrader5.history_deals_get", return_value=(sample_deal,)),
+        patch("MetaTrader5.history_orders_get", return_value=(sample_history_order,)),
+        patch("MetaTrader5.symbol_info", return_value=sample_symbol_info),
+        patch("MetaTrader5.positions_get", return_value=(position,)),
+    ):
+        result = sync_worker.process_sync_job(job)
+
+    assert result.status == STATUS_DONE
+    assert result.open_positions == [{
+        "ticket": 12345, "identifier": 12345, "symbol": "EURUSD", "volume": 0.1,
+        "swap": 74.31, "profit": 5.0, "time_update": 1700000000,
+    }]
+
+
+def test_process_sync_job_unlistable_positions_is_none_not_failure(
+    sample_deal, sample_history_order, sample_symbol_info
+):
+    job = _make_job()
+    with (
+        patch("MetaTrader5.initialize", return_value=True),
+        patch("MetaTrader5.history_deals_get", return_value=(sample_deal,)),
+        patch("MetaTrader5.history_orders_get", return_value=(sample_history_order,)),
+        patch("MetaTrader5.symbol_info", return_value=sample_symbol_info),
+        patch("MetaTrader5.positions_get", return_value=None),
+    ):
+        result = sync_worker.process_sync_job(job)
+
+    assert result.status == STATUS_DONE
+    assert result.open_positions is None
+
+
+def test_job_view_includes_open_positions():
+    job = _make_job(job_id="view-open-positions")
+    job.status = STATUS_DONE
+    job.open_positions = [{"identifier": 1, "swap": -2.0}]
+    with sync_worker._store_lock:
+        sync_worker._jobs[job.job_id] = job
+    try:
+        view = sync_worker.get_job_view(job.job_id)
+    finally:
+        with sync_worker._store_lock:
+            sync_worker._jobs.pop(job.job_id, None)
+    assert view["open_positions"] == [{"identifier": 1, "swap": -2.0}]
