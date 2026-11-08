@@ -1,7 +1,7 @@
 """Tests for the sync-account-history job queue (sync_worker.py + routes/sync.py)."""
 import itertools
 import time
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -470,3 +470,55 @@ def test_job_view_includes_open_positions():
         with sync_worker._store_lock:
             sync_worker._jobs.pop(job.job_id, None)
     assert view["open_positions"] == [{"identifier": 1, "swap": -2.0}]
+
+
+# ── account balance (balance change without a trade) ──────────────────────────
+
+def test_process_sync_job_returns_the_account_balance(
+    sample_deal, sample_history_order, sample_symbol_info
+):
+    job = _make_job()
+    with (
+        patch("MetaTrader5.initialize", return_value=True),
+        patch("MetaTrader5.history_deals_get", return_value=(sample_deal,)),
+        patch("MetaTrader5.history_orders_get", return_value=(sample_history_order,)),
+        patch("MetaTrader5.symbol_info", return_value=sample_symbol_info),
+        patch("MetaTrader5.positions_get", return_value=()),
+        patch("MetaTrader5.account_info", return_value=MagicMock(balance=100250.5)),
+    ):
+        result = sync_worker.process_sync_job(job)
+
+    assert result.status == STATUS_DONE
+    assert result.account_balance == 100250.5
+
+
+def test_process_sync_job_unknown_balance_is_none_not_failure(
+    sample_deal, sample_history_order, sample_symbol_info
+):
+    job = _make_job()
+    with (
+        patch("MetaTrader5.initialize", return_value=True),
+        patch("MetaTrader5.history_deals_get", return_value=(sample_deal,)),
+        patch("MetaTrader5.history_orders_get", return_value=(sample_history_order,)),
+        patch("MetaTrader5.symbol_info", return_value=sample_symbol_info),
+        patch("MetaTrader5.positions_get", return_value=()),
+        patch("MetaTrader5.account_info", return_value=None),
+    ):
+        result = sync_worker.process_sync_job(job)
+
+    assert result.status == STATUS_DONE
+    assert result.account_balance is None
+
+
+def test_job_view_includes_the_account_balance():
+    job = _make_job(job_id="view-balance")
+    job.status = STATUS_DONE
+    job.account_balance = 5000.0
+    with sync_worker._store_lock:
+        sync_worker._jobs[job.job_id] = job
+    try:
+        view = sync_worker.get_job_view(job.job_id)
+    finally:
+        with sync_worker._store_lock:
+            sync_worker._jobs.pop(job.job_id, None)
+    assert view["account_balance"] == 5000.0
