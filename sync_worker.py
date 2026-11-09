@@ -86,6 +86,7 @@ class Job:
     deal_count: Optional[int] = None
     symbols: Optional[dict] = None
     open_positions: Optional[list] = None
+    account_balance: Optional[float] = None
     error: Optional[str] = None
     error_code: Optional[int] = None
     hint: Optional[str] = None
@@ -182,6 +183,16 @@ def _enrich_deals(deals: list[dict]) -> dict:
     return symbols
 
 
+def _account_balance() -> Optional[float]:
+    """
+    Balance of the logged-in account now (mt5.account_info().balance). The
+    journal compares it with deposits + realized PnL to spot a balance change
+    without a trade (a prop firm phase reset). None when MT5 can't tell.
+    """
+    info = mt5.account_info()
+    return info.balance if info is not None else None
+
+
 def _open_positions() -> Optional[list]:
     """
     Positions still open on the logged-in account, with the swap they have
@@ -272,6 +283,7 @@ def process_sync_job(job: Job) -> Job:
         job.deal_count = len(job.result)
         job.symbols = _enrich_deals(job.result)
         job.open_positions = _open_positions()
+        job.account_balance = _account_balance()
     except Exception as e:
         logger.error(f"Error in process_sync_job: {str(e)}")
         job.error = "Internal server error"
@@ -363,6 +375,7 @@ def get_job_view(job_id: str) -> Optional[dict]:
             "result": job.result,
             "symbols": job.symbols,
             "open_positions": job.open_positions,
+            "account_balance": job.account_balance,
             "error": job.error,
             "error_code": job.error_code,
             "hint": job.hint,
